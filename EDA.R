@@ -1,0 +1,395 @@
+# ====================
+# Load necessary library
+# ====================
+if (!require(ggplot2)) install.packages("ggplot2")
+library(ggplot2)
+if (!require(dplyr)) install.packages("dplyr")
+library(dplyr)
+if (!require(lubridate)) install.packages("lubridate")
+library(lubridate)
+if (!require(ROCR)) install.packages("ROCR")
+library(ROCR)
+
+# ====================
+# Data Cleaning
+# ====================
+
+# Specify the file path
+file_path <- "/Users/justinwoo/Documents/GitHub/MGT6203-Group-11-Project/game_logs.csv"
+
+# Read the CSV file
+data <- read.csv(file_path)
+
+
+# Ensure the "date" column is in proper Date format (adjust format as needed)
+data <- data %>%
+  mutate(date = ymd(date))  # Assumes "date" is in "YYYY-MM-DD" format
+
+# Add a new column "Winning Team" based on the condition
+data <- data %>%
+  mutate(Target = ifelse(v_score > h_score, "Visiting", "Home"))
+
+# Create "Visiting Win" and "Home Win" features
+data <- data %>%
+  mutate(
+    Visiting_Win = Target == "Visiting",
+    Home_Win = Target == "Home"
+  )
+
+
+# Create a column for the winning team's name
+data <- data %>%
+  mutate(Team = ifelse(Target == "Visiting", v_name, h_name))
+
+
+
+# Ensure the "date" column is in Date format and extract the year to represent the season
+data <- data %>%
+  mutate(
+    date = as.Date(date),  # Ensure the date column is in Date format
+    season_year = year(date)  # Extract the year from the date
+  )
+
+# Filter the data to keep only rows where "forfeit" equals ""
+data <- data %>% filter(forefeit == "")
+
+# Filter out rows before the year 2000
+data <- data %>% filter(year(date) >= 2000)
+
+
+# Encode target variable as numeric (0 = Home team wins, 1 = Away team wins)
+data <- data %>%
+  mutate(Target = ifelse(Target == "Home", 1, 0))
+
+# Define the columns to keep
+columns_to_keep <- c('Target','season_year', 'number_of_game', 
+                     'day_of_week', 'v_name', 'h_name',  
+                     'day_night', 'attendance', 'v_starting_pitcher_name', 
+                     'h_starting_pitcher_name')
+
+
+# Filter the DataFrame to keep only the specified columns
+filtered_data <- data %>% select(all_of(columns_to_keep))
+
+# Remove null values
+filtered_data <- filtered_data %>%
+  na.omit()
+
+
+# View the first few rows of the filtered data
+head(filtered_data)
+
+# ====================
+# EDA for Classification
+# ====================
+
+# Overview of the data
+summary(filtered_data)
+
+# Structure of the data
+str(filtered_data)
+
+# Target Variable Distribution
+Target_count <- filtered_data %>%
+  count(Target)
+
+print(Target_count)
+
+# Plot Target Variable Distribution (0 = Home team wins, 1 = Away team wins)
+ggplot(Target_count, aes(x = Target, y = n, fill = Target)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Winning Team Distribution", x = "Winning Team", y = "Count") +
+  theme_minimal()
+
+# ====================
+# Feature Analysis
+# ====================
+
+
+# Day vs Night Games and Winning Team
+ggplot(filtered_data, aes(x = day_night, fill = factor(Target))) +
+  geom_bar(position = "dodge") +  # Use dodge to separate the bars for each team
+  labs(
+    title = "Winning Team Distribution by Day/Night Games",
+    x = "Day/Night",
+    y = "Number of Games",
+    fill = "Winning Team (0 = Home, 1 = Visiting)"
+  ) +
+  theme_minimal()
+
+# Starting Pitcher Impact
+# Calculate win statistics for visiting pitchers with a minimum of 10 games
+top_pitchers <- filtered_data %>%
+  filter(!is.na(v_starting_pitcher_name)) %>%  # Exclude rows with missing pitcher names
+  group_by(v_starting_pitcher_name) %>%
+  summarize(
+    Total_Games = n(),
+    Wins = sum(Target == 0),
+    Win_Percentage = Wins / Total_Games
+  ) %>%
+  filter(Total_Games >= 10) %>%  # Filter pitchers with at least 10 games
+  arrange(desc(Win_Percentage)) %>%
+  slice(1:10)  # Select top 10 pitchers by win percentage
+
+# Prepare data for plotting
+filtered_top_pitchers <- filtered_data %>%
+  filter(v_starting_pitcher_name %in% top_pitchers$v_starting_pitcher_name) %>%
+  left_join(top_pitchers, by = "v_starting_pitcher_name")
+
+# Plot Win Percentages for Top 10 Visiting Pitchers
+ggplot(top_pitchers, aes(x = reorder(v_starting_pitcher_name, Win_Percentage), y = Win_Percentage)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Win Percentage of Top 10 Visiting Starting Pitchers (Min 10 Games)",
+    x = "Visiting Starting Pitcher",
+    y = "Win Percentage"
+  ) +
+  scale_y_continuous(labels = scales::percent) +  # Convert to percentage format
+  theme_minimal()
+
+# Calculate win statistics for home starting pitchers with a minimum of 10 games
+top_home_pitchers <- filtered_data %>%
+  filter(!is.na(h_starting_pitcher_name)) %>%  # Exclude rows with missing pitcher names
+  group_by(h_starting_pitcher_name) %>%
+  summarize(
+    Total_Games = n(),
+    Wins = sum(Target == 1),
+    Win_Percentage = Wins / Total_Games
+  ) %>%
+  filter(Total_Games >= 10) %>%  # Filter pitchers with at least 10 games
+  arrange(desc(Win_Percentage)) %>%
+  slice(1:10)  # Select top 10 pitchers by win percentage
+
+# Prepare data for plotting
+filtered_top_home_pitchers <- filtered_data %>%
+  filter(h_starting_pitcher_name %in% top_home_pitchers$h_starting_pitcher_name) %>%
+  left_join(top_home_pitchers, by = "h_starting_pitcher_name")
+
+# Plot Win Percentages for Top 10 Home Pitchers
+ggplot(top_home_pitchers, aes(x = reorder(h_starting_pitcher_name, Win_Percentage), y = Win_Percentage)) +
+  geom_bar(stat = "identity", fill = "firebrick") +
+  coord_flip() +
+  labs(
+    title = "Win Percentage of Top 10 Home Starting Pitchers (Min 10 Games)",
+    x = "Home Starting Pitcher",
+    y = "Win Percentage"
+  ) +
+  scale_y_continuous(labels = scales::percent) +  # Convert to percentage format
+  theme_minimal()
+
+# Combine home and away games to see overall win percentage
+# Calculate win statistics for visiting pitchers
+visiting_pitchers <- filtered_data %>%
+  filter(!is.na(v_starting_pitcher_name)) %>%
+  group_by(v_starting_pitcher_name) %>%
+  summarize(
+    Total_Games_Visiting = n(),
+    Wins_Visiting = sum(Target == "0"),
+    .groups = "drop"
+  )
+
+# Calculate win statistics for home pitchers
+home_pitchers <- filtered_data %>%
+  filter(!is.na(h_starting_pitcher_name)) %>%
+  group_by(h_starting_pitcher_name) %>%
+  summarize(
+    Total_Games_Home = n(),
+    Wins_Home = sum(Target == "1"),
+    .groups = "drop"
+  )
+
+# Merge the two datasets
+combined_pitchers <- full_join(
+  visiting_pitchers,
+  home_pitchers,
+  by = c("v_starting_pitcher_name" = "h_starting_pitcher_name")
+) %>%
+  rename(Pitcher = v_starting_pitcher_name) %>%
+  mutate(
+    Total_Games = coalesce(Total_Games_Visiting, 0) + coalesce(Total_Games_Home, 0),
+    Total_Wins = coalesce(Wins_Visiting, 0) + coalesce(Wins_Home, 0),
+    Win_Percentage = Total_Wins / Total_Games
+  ) %>%
+  filter(Total_Games >= 10) %>%  # Filter pitchers with at least 10 games
+  arrange(desc(Win_Percentage)) %>%
+  slice(1:10)  # Select top 10 pitchers by win percentage
+
+# View top 10 pitchers
+print(combined_pitchers)
+
+# Plot Overall Win Percentages
+ggplot(combined_pitchers, aes(x = reorder(Pitcher, Win_Percentage), y = Win_Percentage)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Pitchers by Overall Win Percentage (Min 10 Games)",
+    x = "Pitcher",
+    y = "Win Percentage"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+
+
+
+# ====================
+# Time-Based Trends
+# ====================
+
+# Winning Team Proportions by Season
+season_Target <- filtered_data %>%
+  group_by(season_year, Target) %>%
+  summarize(count = n(), .groups = "drop")
+
+ggplot(season_Target, aes(x = season_year, y = count, fill = Target)) +
+  geom_bar(stat = "identity", position = "fill") +
+  coord_flip() +
+  labs(title = "Winning Team Proportions by Season", x = "Season", y = "Proportion") +
+  theme_minimal()
+
+
+# ====================
+# Prepare Data for Classification
+# ====================
+
+# Encode the target variable
+filtered_data <- filtered_data %>%
+  mutate(day_night = ifelse(day_night == "N", 1, 0))
+
+print(filtered_data)
+# Cyclical Encoding for day of the week
+# Map days of the week to integers (Monday = 0, Sunday = 6)
+filtered_data <- filtered_data %>%
+  mutate(day_of_week_num = case_when(
+    day_of_week == "Mon" ~ 0,
+    day_of_week == "Tue" ~ 1,
+    day_of_week == "Wed" ~ 2,
+    day_of_week == "Thu" ~ 3,
+    day_of_week == "Fri" ~ 4,
+    day_of_week == "Sat" ~ 5,
+    day_of_week == "Sun" ~ 6
+  ))
+
+
+# Team names encoding
+# Win rate of visitor team per season
+v_name_season_win_rate <- filtered_data %>%
+  group_by(season_year, v_name) %>%
+  summarize(
+    v_win_rate = mean(Target == 1, na.rm = TRUE),  # 1 = Visiting Win
+    .groups = "drop"
+  )
+# Win rate of home team per season
+h_name_season_win_rate <- filtered_data %>%
+  group_by(season_year, h_name) %>%
+  summarize(
+    h_win_rate = mean(Target == 0, na.rm = TRUE),  # 0 = Home Win
+    .groups = "drop"
+  )
+
+# Merge into main dataset 
+filtered_data <- filtered_data %>%
+  left_join(v_name_season_win_rate, by = c("season_year", "v_name")) %>%
+  left_join(h_name_season_win_rate, by = c("season_year", "h_name"))
+
+# Drop original columns
+filtered_data <- filtered_data %>%
+  select(-v_name, -h_name)
+
+
+# Apply sine and cosine transformations
+filtered_data <- filtered_data %>%
+  mutate(
+    day_sin = sin(2 * pi * day_of_week_num / 7),
+    day_cos = cos(2 * pi * day_of_week_num / 7)
+  ) %>%
+  select(-day_of_week, -day_of_week_num)  # Optionally drop original columns
+
+# Target encoding for pitchers
+# Encode visiting pitcher win rate
+v_pitcher_target <- filtered_data %>%
+  group_by(v_starting_pitcher_name) %>%
+  summarize(v_pitcher_win_rate = mean(Target == 1, na.rm = TRUE))
+
+# Encode home pitcher win rate
+h_pitcher_target <- filtered_data %>%
+  group_by(h_starting_pitcher_name) %>%
+  summarize(h_pitcher_win_rate = mean(Target == 0, na.rm = TRUE))
+
+# Merge visiting pitcher win rate
+filtered_data <- filtered_data %>%
+  left_join(v_pitcher_target, by = "v_starting_pitcher_name")
+
+# Merge home pitcher win rate
+filtered_data <- filtered_data %>%
+  left_join(h_pitcher_target, by = "h_starting_pitcher_name")
+
+# Drop original pitcher columns
+filtered_data <- filtered_data %>%
+  select(-v_starting_pitcher_name, -h_starting_pitcher_name)
+
+# ====================
+# Correlation Analysis
+# ====================
+# Compute correlation matrix (ignoring non-numeric columns)
+correlation_matrix <- cor(filtered_data, use = "complete.obs")
+
+# View the matrix
+print(correlation_matrix)
+
+# ====================
+# Classification
+# ====================
+
+# Logistic regression model
+logit_model <- glm(
+  Target ~ season_year + number_of_game + day_night + attendance + 
+    v_win_rate + h_win_rate + day_sin + day_cos + 
+    v_pitcher_win_rate + h_pitcher_win_rate, 
+  data = filtered_data, 
+  family = "binomial"
+)
+
+# Summary of the model
+summary(logit_model)
+
+# Add predicted probabilities and outcomes to the data
+filtered_data <- filtered_data %>%
+  mutate(
+    pred_prob = predict(logit_model, newdata = ., type = "response"),
+    pred_outcome = ifelse(pred_prob >= 0.5, 1, 0)
+  )
+
+# View the first few rows with predictions
+head(filtered_data)
+
+# Confusion matrix
+conf_matrix <- table(Actual = filtered_data$Target, Predicted = filtered_data$pred_outcome)
+print(conf_matrix)
+
+# Accuracy Calculation
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+print(paste("Accuracy:", accuracy))
+
+# Precision Calculation
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])  # True Positives / (True Positives + False Positives)
+print(paste("Precision:", precision))
+
+# Recall Calculation
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])  # True Positives / (True Positives + False Negatives)
+print(paste("Recall:", recall))
+
+
+# Create prediction object
+pred <- prediction(filtered_data$pred_prob, filtered_data$Target)
+
+# Performance metrics
+perf <- performance(pred, "tpr", "fpr")
+
+# Plot ROC curve
+plot(perf, colorize = TRUE, main = "ROC Curve")
+
+# Calculate AUC
+auc <- performance(pred, measure = "auc")
+print(auc@y.values)
+
